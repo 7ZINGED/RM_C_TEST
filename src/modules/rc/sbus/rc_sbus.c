@@ -49,13 +49,13 @@ static rt_err_t sbus_rc_decode(uint8_t *buff){
          rc_obj[NOW].ch4 = (buff[5] >> 1 | buff[6] << 7) & 0x07FF;
          rc_obj[NOW].ch4 -= 1024;
          /* 防止遥控器零点有偏差 */
-         if (rc_obj[NOW].ch1 <= 5 && rc_obj[NOW].ch1 >= -5)
+         if (rc_obj[NOW].ch1 <= 20 && rc_obj[NOW].ch1 >= -20)
              rc_obj[NOW].ch1 = 0;
-         if (rc_obj[NOW].ch2 <= 5 && rc_obj[NOW].ch2 >= -5)
+         if (rc_obj[NOW].ch2 <= 20 && rc_obj[NOW].ch2 >= -20)
              rc_obj[NOW].ch2 = 0;
-         if (rc_obj[NOW].ch3 <= 5 && rc_obj[NOW].ch3 >= -5)
+         if (rc_obj[NOW].ch3 <= 20 && rc_obj[NOW].ch3 >= -20)
              rc_obj[NOW].ch3 = 0;
-         if (rc_obj[NOW].ch4 <= 5 && rc_obj[NOW].ch4 >= -5)
+         if (rc_obj[NOW].ch4 <= 20 && rc_obj[NOW].ch4 >= -20)
              rc_obj[NOW].ch4 = 0;
 //        /* 旋钮值获取 */
 //?
@@ -63,27 +63,31 @@ static rt_err_t sbus_rc_decode(uint8_t *buff){
          rc_obj[NOW].ch5 = (buff[6] >> 4 | buff[7] << 4) & 0x07FF;
 //右旋钮
          rc_obj[NOW].ch6 = (buff[7] >> 7 | buff[8] << 1 | buff[9] << 9) & 0x07FF;
+         rc_obj[NOW].ch5 -= 1024;
+         rc_obj[NOW].ch6 -= 1024;
          //防止偏差
-         if (rc_obj[NOW].ch5 <= 5 && rc_obj[NOW].ch5 >= -5)
+         if (rc_obj[NOW].ch5 <= 20 && rc_obj[NOW].ch5 >= -20)
              rc_obj[NOW].ch5 = 0;
-         if (rc_obj[NOW].ch6 <= 5 && rc_obj[NOW].ch6 >= -5)
+         if (rc_obj[NOW].ch6 <= 20 && rc_obj[NOW].ch6 >= -20)
              rc_obj[NOW].ch6 = 0;
 //        /* 拨杆值获取 */
 //?
-//容易知道为8位
          rc_obj[NOW].sw1 = (buff[9] >> 2 | buff[10] << 6) & 0x07FF;
          rc_obj[NOW].sw2 = (buff[10] >> 5 | buff[11] << 3) & 0x07FF;
          rc_obj[NOW].sw3 = (buff[12] | buff[13] << 8) & 0x07FF;
          rc_obj[NOW].sw4 = (buff[13] >> 3 | buff[14] << 5) & 0x07FF;
+         rc_obj[NOW].sw1 -= 1024;
+         rc_obj[NOW].sw2 -= 1024;
+         rc_obj[NOW].sw3 -= 1024;
+         rc_obj[NOW].sw4 -= 1024;
          /*
           *  rc_obj[NOW].sw1 = (buff[9] >>2 | buff[10] << 6) & 0x00FF;
          rc_obj[NOW].sw2 = (buff[10] >>2 | buff[11] << 6) & 0x00FF;
          rc_obj[NOW].sw3 = (buff[12] >>2 | buff[13] << 6) & 0x00FF;
          rc_obj[NOW].sw4= (buff[13] >>2 | buff[14] << 6) & 0x00FF;
           */
-//两端最大值不一样？
-         if ((abs(rc_obj[NOW].ch1) > 784.0f) ||(abs(rc_obj[NOW].ch2) > 784.0f) || (abs(rc_obj[NOW].ch3) > 784.0f) ||(abs(rc_obj[NOW].ch4) > 784.0f) || \
-         (abs(rc_obj[NOW].ch5) > 784.0f) || (abs(rc_obj[NOW].ch6) > 784.0f))
+         if ((abs(rc_obj[NOW].ch1) > RC_SBUS_MAX_VALUE) ||(abs(rc_obj[NOW].ch2) > RC_SBUS_MAX_VALUE) || (abs(rc_obj[NOW].ch3) > RC_SBUS_MAX_VALUE) ||(abs(rc_obj[NOW].ch4) > RC_SBUS_MAX_VALUE) || \
+         (abs(rc_obj[NOW].ch5) > RC_SBUS_MAX_VALUE) || (abs(rc_obj[NOW].ch6) > RC_SBUS_MAX_VALUE))
       {
              memset(&rc_obj[NOW], 0, sizeof(rc_obj_t));
              return -RT_ERROR;

@@ -42,7 +42,6 @@ static int total_angle_flag=SHOOT_ANGLE_CONTINUE;
 /*发射模块电机编号：分别为左摩擦轮电机 右摩擦轮电机 拨弹电机*/
 //添加中摩擦轮电机
 #define RIGHT_FRICTION 0
-
 #define LEFT_FRICTION 1
 #define TRIGGER_MOTOR 2
 #define MIDDLE_FRICTION 3

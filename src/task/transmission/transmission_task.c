@@ -34,6 +34,7 @@ RpyTypeDef rpy_tx_data={
 };
 RpyTypeDef rpy_rx_data; //接收解析结构体
 static rt_uint32_t heart_dt;//心跳数据相关
+static rt_uint32_t heart_dt1;
 /* ---------------------------------usb虚拟串口相关 --------------------------------- */
 static rt_device_t vs_port = RT_NULL;
 /* -------------------------------- 线程间通讯话题相关 ------------------------------- */
@@ -98,7 +99,10 @@ void transmission_task_entry(void* argument)
     /* step1：查找名为 "vcom" 的虚拟串口设备*/
     vs_port = rt_device_find("vcom");
     /* step2：打开串口设备。以中断接收及轮询发送模式打开串口设备*/
-   rt_device_open(vs_port, RT_DEVICE_FLAG_INT_RX);
+    if(vs_port)
+    {
+        rt_device_open(vs_port, RT_DEVICE_FLAG_INT_RX);
+    }
     /*环形缓冲区初始化*/
     rt_ringbuffer_init(&receive_buffer, r_buffer, RECV_BUFFER_SIZE);
     /*清除buffer的指针赋地址*/
@@ -106,7 +110,6 @@ void transmission_task_entry(void* argument)
     /* 设置接收回调函数 */
     rt_device_set_rx_indicate(vs_port, usb_input);
     LOG_I("Transmission Task Start");
-    heart_dt = dwt_get_time_ms();
     while (1)
     {
         trans_start = dwt_get_time_ms();
@@ -116,14 +119,14 @@ void transmission_task_entry(void* argument)
         trans_pub_push();
 /*--------------------------------------------------具体需要发送的数据--------------------------------- */
 //加分项：添加心跳数据判断异常并重启虚拟串口
-//当有心跳数据但心跳数据内容异常
-//为确认下位机可以接收到上位机数据，故这里加一个延时来确保有心跳和无心跳时，线程运行时间不同，接收数据间隔也不同
+//为方便调试，故这里加一个延时来确保有心跳和无心跳时，线程运行时间不同，接收数据间隔也不同
+//如果当前时间与上一次接收心跳数据时间超过间隔说明心跳数据异常
         if((dwt_get_time_ms()-heart_dt)>HEARTBEAT)
         {
-            rt_device_close(vs_port);
-            rt_device_open(vs_port, RT_DEVICE_FLAG_INT_RX);;
-           // rt_device_control(vs_port, RT_DEVICE_CTRL_RESUME, (void *) RT_DEVICE_FLAG_INT_RX);
-            rt_thread_delay(5000);
+          //  rt_device_close(vs_port);
+        //    rt_device_open(vs_port, RT_DEVICE_FLAG_INT_RX);
+            rt_device_control(vs_port, RT_DEVICE_CTRL_RESUME, (void *) RT_DEVICE_FLAG_INT_RX);
+           // rt_thread_delay(5000);
         }
 
 
@@ -136,52 +139,66 @@ Send_to_pc(rpy_tx_data);
         if (trans_dt > 1)
             LOG_E("Transmission Task is being DELAY! dt = [%f]", &trans_dt);
         //TODO:为保证流畅运行这里改为1000，原为1
-        rt_thread_mdelay(1000);
+        rt_thread_mdelay(1);
     }
 }
 //发送函数
 void Send_to_pc(RpyTypeDef data_r)
 {
     /*填充数据*/
-    float yaw = ins_data.yaw;
-    float roll = ins_data.yaw;
-    float pitch = ins_data.yaw;
-//应与初始位置计算得知
-    pack_Rpy(&data_r, -(gim_fdb.yaw_offset_angle - ins_data.yaw), gim_fdb.pit_offset_angle-ins_data.pitch, ins_data.roll);
+//应填充云台初始角度计算的数值
+//roll无法控制
+    pack_Rpy(&data_r, (ins_data.yaw-gim_fdb.yaw_offset_angle), (ins_data.pitch-gim_fdb.pit_offset_angle), ins_data.roll);
+    //数据检验
     Check_Rpy(&data_r);
     /*发送数据*/
-    rt_device_write(vs_port, 0, (uint8_t*)&data_r, sizeof(data_r));
+    rt_device_write(vs_port, 0, &data_r, sizeof(data_r));
 }
 
 //数据打包函数，参考提供的代码填写
 void pack_Rpy(RpyTypeDef *frame, float yaw, float pitch,float roll)
 {
-    //DATA第0位为为0，为绝对角度控制
     //小端模式，低位在前，高位在后
     int8_t rpy_tx_buffer[FRAME_RPY_LEN] = {0} ;
-    int32_t rpy_practical_data = 0;
-    //将data的地址转化为uint32整型的地址并给rpy，则对rpy_tx_buffer元素的地址直接对*rpy移位即可
-    uint32_t *rpy = (uint32_t *)&rpy_practical_data;
+    int32_t rpy_data = 0;
+    //将data的地址转化为int32整型的地址，则对rpy_tx_buffer元素的地址直接对*rpy移位即可
+    uint32_t *rpy = (int32_t *)&rpy_data;
     rpy_tx_buffer[0] = 0;
+    //由于数据类型差异该数组元素只会取起始地址开始的8位数据
+    rpy_data = yaw * 1000;
+    for(int i=1;i<5;++i)
+    {
+        rpy_tx_buffer[i] = *rpy >> (8 * (i - 1));
+    }
+    rpy_data = pitch * 1000;
+    for(int i=1;i<5;++i)
+    {
+        rpy_tx_buffer[i+4] = *rpy >> (8 * (i - 1));
+    }
 
-    rpy_practical_data = yaw * 1000;
-    rpy_tx_buffer[1] = *rpy;
-    rpy_tx_buffer[2] = *rpy >> 8;
-    rpy_tx_buffer[3] = *rpy >> 16;
-    rpy_tx_buffer[4] = *rpy >> 24;
-
-    rpy_practical_data = pitch * 1000;
-    rpy_tx_buffer[5] = *rpy;
-    rpy_tx_buffer[6] = *rpy >> 8;
-    rpy_tx_buffer[7] = *rpy >> 16;
-    rpy_tx_buffer[8] = *rpy >> 24;
-
-    rpy_practical_data = roll *1000;
-    rpy_tx_buffer[9]  = *rpy;
-    rpy_tx_buffer[10] = *rpy >> 8;
-    rpy_tx_buffer[11] = *rpy >> 16;
-    rpy_tx_buffer[12] = *rpy >> 24;
-    memcpy(&frame->DATA[0], rpy_tx_buffer,13);
+    rpy_data = roll *1000;
+    for(int i=1;i<5;++i)
+    {
+        rpy_tx_buffer[i+8] = *rpy >> (8 * (i - 1));
+    }
+    /*
+     * rpy_data = yaw * 1000;
+rpy_tx_buffer[1] = *rpy;
+rpy_tx_buffer[2] = *rpy >> 8;
+rpy_tx_buffer[3] = *rpy >> 16;
+rpy_tx_buffer[4] = *rpy >> 24;
+rpy_data = pitch * 1000;
+rpy_tx_buffer[5] = *rpy;
+rpy_tx_buffer[6] = *rpy >> 8;
+rpy_tx_buffer[7] = *rpy >> 16;
+rpy_tx_buffer[8] = *rpy >> 24;
+rpy_data = roll *1000;
+rpy_tx_buffer[9] = *rpy;
+rpy_tx_buffer[10] = *rpy >> 8;
+rpy_tx_buffer[11] = *rpy >> 16;
+rpy_tx_buffer[12] = *rpy >> 24;
+     */
+    memcpy(&(frame->DATA[0]), rpy_tx_buffer,13);
     frame->LEN = FRAME_RPY_LEN;
 }
 
@@ -234,18 +251,19 @@ void Check_Rpy(RpyTypeDef *frame)
 //接收数据解析结束
 static rt_err_t usb_input(rt_device_t dev, rt_size_t size)
 {
+    //方便心跳判断异常是否生效
     heart_dt = dwt_get_time_ms();
 //   1. 重置初始化缓冲区
     memset(buf, 0, sizeof(buf));
 //   2.从虚拟串口device读取数据
-    rt_uint32_t length;
+    rt_int32_t length;
 //数据帧读取完成后才能进入下一步
-    while ((length = rt_device_read(vs_port, 0, buf, sizeof(buf))) > 0)
+//该函数返回读取数据的实际大小
+    while ((length = rt_device_read(dev, 0, buf, sizeof(buf))) > 0)
     {
         //   3. 保存数据到环形缓冲区receive_buffer或者自定义正常数组缓冲区
 //?
-      //  rt_ringbuffer_put(&receive_buffer,buf,rx_lenth);
-        rt_ringbuffer_put_force(&receive_buffer,buf,length);
+        rt_ringbuffer_put(&receive_buffer,buf,length);
     }
 
 
@@ -259,27 +277,26 @@ static rt_err_t usb_input(rt_device_t dev, rt_size_t size)
 
 
 //  6. 处理不同类型的数据帧进行解包，并将数据存放至结构体trans_fdb汇总，参考提供的代码
-        //心跳
         switch (rpy_rx_data.ID) {
             case GIMBAL: {
                 if (rpy_rx_data.DATA[0])
                 {
-                    trans_fdb.yaw = (*(int32_t *) &rpy_rx_data.DATA[1] / 1000.0);
-                    trans_fdb.pitch = (*(int32_t *) &rpy_rx_data.DATA[5] / 1000.0);
+                    //（uint32_t *) 将地址转换为 int32_t 数据类型的指针，再指向变量，经过简单程序的验证，结果为4个元素的拼接
+                    trans_fdb.yaw = (*(int32_t *) &rpy_rx_data.DATA[1] / 1000.0f);
+                    trans_fdb.pitch = (*(int32_t *) &rpy_rx_data.DATA[5] / 1000.0f);
                 }else {
-                    //u1s1这里传值要不要有区别
-                    trans_fdb.yaw = (*(int32_t *) &rpy_rx_data.DATA[1] / 1000.0);
-                    trans_fdb.pitch = (*(int32_t *) &rpy_rx_data.DATA[5] / 1000.0);
+                    //相对角度控制与绝对角度控制传值是否有区别
+                    //与通信协议不同。数据长度为25，或许后12位是记录相对角度?但不确定先不修改
+                    trans_fdb.yaw = (*(int32_t *) &rpy_rx_data.DATA[1] / 1000.0f);
+                    trans_fdb.pitch = (*(int32_t *) &rpy_rx_data.DATA[5] / 1000.0f);
                 }
 
             }
                 break;
             case HEARTBEAT:
             {
-                trans_fdb.heartbeat = rpy_rx_data.DATA[0];
-                //测试时未用到
+                trans_fdb.heartbeat = (uint8_t)rpy_rx_data.DATA[0];
                 heart_dt = dwt_get_time_ms();
-
             }
                 break;
         }
@@ -287,6 +304,7 @@ static rt_err_t usb_input(rt_device_t dev, rt_size_t size)
 //   7. 清零存放数据帧的数据结构体
         memset(&rpy_rx_data, 0, sizeof(rpy_rx_data));
     }
+
 //   8. 返回值
 //    return RT_EOK;
     return RT_EOK;

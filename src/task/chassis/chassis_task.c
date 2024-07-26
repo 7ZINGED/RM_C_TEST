@@ -13,13 +13,14 @@
 #define DBG_LVL DBG_INFO
 #define HWTIMER_DEV_NAME   "timer4"     /* 定时器名称 */
 #include <rtdbg.h>
-
+static  int pos_flag = 0;
+static int calc_flag=0;
 /* -------------------------------- 线程间通讯话题相关 ------------------------------- */
 static struct chassis_cmd_msg chassis_cmd;
 static struct referee_fdb_msg referee_fdb;
 static struct chassis_fdb_msg chassis_fdb;
 static struct ins_msg ins_data;
-
+void triangl_transformpos(float a,float b ,float c,float d,int angle);
 static publisher_t *pub_chassis;
 static subscriber_t *sub_cmd,*sub_ins;
 static subscriber_t *sub_referee;
@@ -34,8 +35,11 @@ static void chassis_sub_pull(void);
 //extern ext_power_heat_data_t power_heat_data_t;
 /* --------------------------------- 电机控制相关 --------------------------------- */
 static pid_obj_t *follow_pid; // 用于底盘跟随云台计算vw
-static pid_config_t chassis_follow_config = INIT_PID_CONFIG(CHASSIS_KP_V_FOLLOW, CHASSIS_KI_V_FOLLOW, CHASSIS_KD_V_FOLLOW, CHASSIS_INTEGRAL_V_FOLLOW, CHASSIS_MAX_V_FOLLOW,
+static pid_obj_t  *pos_pid;
+static pid_config_t chassis_pos_config = INIT_PID_CONFIG(CHASSIS_KP_V_MOTOR/(60.0f / (WHEEL_PERIMETER * CHASSIS_DECELE_RATIO)), CHASSIS_KI_V_FOLLOW/(60.0f / (WHEEL_PERIMETER * CHASSIS_DECELE_RATIO)), CHASSIS_KD_V_MOTOR/(60.0f / (WHEEL_PERIMETER * CHASSIS_DECELE_RATIO)), CHASSIS_INTEGRAL_V_MOTOR/(60.0f / (WHEEL_PERIMETER * CHASSIS_DECELE_RATIO)), CHASSIS_MAX_V_MOTOR/(60.0f / (WHEEL_PERIMETER * CHASSIS_DECELE_RATIO)),
                                                          (PID_Trapezoid_Intergral | PID_Integral_Limit | PID_Derivative_On_Measurement));
+static pid_config_t chassis_follow_config = INIT_PID_CONFIG(CHASSIS_KP_V_FOLLOW, 0, CHASSIS_KD_V_FOLLOW, CHASSIS_INTEGRAL_V_FOLLOW, CHASSIS_MAX_V_FOLLOW,
+                                                            (PID_Trapezoid_Intergral | PID_Integral_Limit | PID_Derivative_On_Measurement));
 static struct chassis_controller_t
 {
     pid_obj_t *speed_pid;
@@ -88,6 +92,7 @@ void chassis_thread_entry(void *argument)
     {
         cmd_start = dwt_get_time_ms();
         /* 计算实际速度 */
+        //根据电机转速计算底盘实际速度
         omni_get_speed(chassis_motor);
         /* 更新该线程所有的订阅者 */
         chassis_sub_pull();
@@ -125,6 +130,9 @@ void chassis_thread_entry(void *argument)
             break;
         case CHASSIS_AUTO:
             //航迹控制开始，建议用里程计和期望位置进行PD控制输出vx，vy
+            absolute_cal(&chassis_cmd, chassis_cmd.offset_angle);
+                triangl_transformpos(1,1,1,1,1);
+            chassis_calc_moto_speed(&chassis_cmd, motor_ref);
 
             //航迹控制结束
             chassis_calc_moto_speed(&chassis_cmd, motor_ref);
@@ -269,6 +277,7 @@ static void chassis_motor_init()
     }
 
     follow_pid = pid_register(&chassis_follow_config);
+    pos_pid = pid_register(&chassis_pos_config);
 }
 
 /* --------------------------------- 底盘解算控制 --------------------------------- */
@@ -293,11 +302,10 @@ static void omni_calc(struct chassis_cmd_msg *cmd, int16_t* out_speed)
 
 
     //底盘逆解算开始，将cmd结构体中的vx，vy和vw转换为四个轮子的速度
-
-    wheel_rpm[0]=(cmd->vx * sin(PI/4)+cmd->vy * sin(PI/4) + cmd->vw *(WHEELBASE+WHEELTRACK ))/(WHEEL_PERIMETER*2*PI)*60.0f;
-    wheel_rpm[1]=(-cmd->vx*sin(PI/4)+cmd->vy*sin(PI/4)+cmd->vw*(WHEELTRACK+WHEELBASE))/(WHEEL_PERIMETER*2*PI)*60.0f;
-    wheel_rpm[2]=(-cmd->vx * sin(PI/4)-cmd->vy * sin(PI/4) + cmd->vw *(WHEELBASE+WHEELTRACK ))/(WHEEL_PERIMETER*2*PI)*60.0f;
-    wheel_rpm[3]=(cmd->vx*sin(PI/4)-cmd->vy*sin(PI/4)+cmd->vw*(WHEELTRACK+WHEELBASE))/(WHEEL_PERIMETER*2*PI)*60.0f;
+    wheel_rpm[0] = ( sin(PI/4)*(cmd->vx + cmd->vy + cmd->vw) * LENGTH_RADIUS )* wheel_rpm_ratio;
+    wheel_rpm[1] = ( sin(PI/4)*(-cmd->vx + cmd->vy + cmd->vw) * LENGTH_RADIUS )* wheel_rpm_ratio;
+    wheel_rpm[2] = (sin(PI/4)*(-cmd->vx - cmd->vy + cmd->vw) * LENGTH_RADIUS) * wheel_rpm_ratio;
+    wheel_rpm[3] = (sin(PI/4)*(cmd->vx - cmd->vy + cmd->vw) * LENGTH_RADIUS) * wheel_rpm_ratio;
 
 //    wheel_rpm[0] = ？//left//x，y方向速度,w底盘转动速度
 //    wheel_rpm[1] = ？//forward
@@ -323,6 +331,15 @@ static rt_err_t timeout_cb(rt_device_t dev, rt_size_t size)
 
 //    chassis_fdb.x_pos_gim=？;
 //    chassis_fdb.y_pos_gim=？;
+//v_ch为底盘速度，后面角度为速度方向与世界坐标系x轴夹角
+    x_ch =vx_ch *0.001 +x_ch;
+    y_ch =vy_ch *0.001 +y_ch;
+    w_ch =vw_ch *0.001 +w_ch;
+    x_gim =vx_gim *0.001 +x_gim;
+    y_gim =vy_gim *0.001 +y_gim;
+
+   chassis_fdb.x_pos_gim=chassis_fdb.x_pos_gim + (sqrt(pow(0.001*vx_ch,2)+pow(0.001*vy_ch,2)))*cos(w_ch);
+   chassis_fdb.y_pos_gim=chassis_fdb.y_pos_gim + (sqrt(pow(0.001*vx_ch,2)+pow(0.001*vy_ch,2)))*sin(w_ch);
 
 //里程计计算结束
     return 0;
@@ -439,4 +456,123 @@ static void absolute_cal(struct chassis_cmd_msg *cmd, float angle)
     //保证底盘是相对摄像头做移动
     cmd->vx = vx * cos(angle_hd) - vy * sin(angle_hd);
     cmd->vy = vx * sin(angle_hd) + vy * cos(angle_hd);
+}
+//三角形循迹
+void triangl_transformpos(float a,float b ,float c,float angle,int e)
+{
+    if (calc_flag==1){
+        goto buchongfu;
+    }
+    float Target_position1_x = a * cos(angle);
+    float Target_position1_y = a * sin(angle);
+    float cos_b =(a*a-b*b+c*c)/(2*a*b);
+    float angle_b = acos(cos_b);
+    float Target_position2_x;
+    float Target_position2_y;
+    float Target_position3_x = 0;
+    float Target_position3_y = 0;
+    //逆时针
+    if (e==1)
+    {
+        float Target_position2_x = c * cos(angle+angle_b);
+        float Target_position2_y = c * sin(angle+angle_b);
+    }
+    if(e==0)
+    {
+        float Target_position2_x = c * cos(-(angle_b-angle));
+        float Target_position2_y = c * sin(-(angle_b-angle));
+    }
+    calc_flag=1;
+    buchongfu:
+    switch (pos_flag) {
+        case 0: {
+            chassis_cmd.vx = pid_calculate(pos_pid, Target_position1_x, 0);
+            chassis_cmd.vy = pid_calculate(pos_pid, Target_position1_y, 0);
+            if ((fabs(chassis_fdb.x_pos_gim) >= fabs(Target_position1_x-1)) && (fabs(chassis_fdb.y_pos_gim) >= fabs(Target_position1_y-1))) {
+                pos_flag = 1;
+            }
+            break;
+        }
+        case 1:
+        {
+            chassis_cmd.vx = pid_calculate(pos_pid, Target_position2_x, 0);
+            chassis_cmd.vy = pid_calculate(pos_pid, Target_position2_y, 0);
+            if ((fabs(chassis_fdb.x_pos_gim) >= fabs(Target_position2_x-1)) && (fabs(chassis_fdb.y_pos_gim) >= fabs(Target_position2_y-1))) {
+                pos_flag = 2;
+            }
+            break;
+        }
+        case 2:
+        {
+            chassis_cmd.vx = pid_calculate(pos_pid, Target_position3_x, 0);
+            chassis_cmd.vy = pid_calculate(pos_pid, Target_position3_y, 0);
+            break;
+        }
+    }
+}
+void rectangle_transformpos(float a,float b ,float angle,int e)
+{
+    if (calc_flag==1){
+        goto buchongfu;
+    }
+    float Target_position1_x = a * cos(angle);
+    float Target_position1_y = a * sin(angle);
+    float Target_position2_x;
+    float Target_position2_y;
+    float Target_position3_x;
+    float Target_position3_y;
+    float Target_position4_x = 0;
+    float Target_position4_y = 0;
+    //逆时针
+    if (e==1)
+    {
+        float Target_position2_x = sqrt(pow(a,2) + pow(b,2))*cos(atan(b/a)+angle);
+        float Target_position2_y = sqrt(pow(a,2) + pow(b,2))*sin(atan(b/a)+angle);
+        float Target_position3_x = b * cos(PI/2+angle);
+        float Target_position3_y = b * sin(PI/2+angle);
+    }
+    if(e==0)
+    {
+        float Target_position2_x = sqrt(pow(a,2) + pow(b,2))*cos(angle- atan(b/a));
+        float Target_position2_y = sqrt(pow(a,2) + pow(b,2))*sin(angle- atan(b/a));
+        float Target_position3_x = b * cos(-(PI/2-angle));
+        float Target_position3_y = b * sin(-(PI/2-angle));
+    }
+    calc_flag=1;
+    buchongfu:
+    switch (pos_flag) {
+        case 0: {
+            chassis_cmd.vx = pid_calculate(pos_pid, Target_position1_x, 0);
+            chassis_cmd.vy = pid_calculate(pos_pid, Target_position1_y, 0);
+            if ((fabs(chassis_fdb.x_pos_gim) >= fabs(Target_position1_x-1)) && (fabs(chassis_fdb.y_pos_gim) >= fabs(Target_position1_y-1))) {
+                pos_flag = 1;
+            }
+            break;
+        }
+        case 1:
+        {
+            chassis_cmd.vx = pid_calculate(pos_pid, Target_position2_x, 0);
+            chassis_cmd.vy = pid_calculate(pos_pid, Target_position2_y, 0);
+            if ((fabs(chassis_fdb.x_pos_gim) >= fabs(Target_position2_x-1)) && (fabs(chassis_fdb.y_pos_gim) >= fabs(Target_position2_y-1))) {
+                pos_flag = 2;
+            }
+            break;
+        }
+        case 2:
+        {
+            chassis_cmd.vx = pid_calculate(pos_pid, Target_position3_x, 0);
+            chassis_cmd.vy = pid_calculate(pos_pid, Target_position3_y, 0);
+            if ((fabs(chassis_fdb.x_pos_gim) >= fabs(Target_position3_x-1)) && (fabs(chassis_fdb.y_pos_gim) >= fabs(Target_position3_y-1))) {
+                pos_flag = 3;
+            }
+            break;
+        }
+        case 3:
+        {
+            chassis_cmd.vx = pid_calculate(pos_pid, Target_position4_x, 0);
+            chassis_cmd.vy = pid_calculate(pos_pid, Target_position4_y, 0);
+            break;
+        }
+
+    }
 }
