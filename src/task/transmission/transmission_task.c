@@ -223,7 +223,7 @@ void Check_Rpy(RpyTypeDef *frame)
     frame->SC = sum & 0xFF;
     frame->AC = add & 0xFF;
 
-}
+ }
 
 /**
  * @brief 接收数据回调函数
