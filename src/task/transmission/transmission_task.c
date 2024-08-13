@@ -200,6 +200,8 @@ rpy_tx_buffer[12] = *rpy >> 24;
      */
     memcpy(&(frame->DATA[0]), rpy_tx_buffer,13);
     frame->LEN = FRAME_RPY_LEN;
+
+
 }
 
 //木鸢通讯协议的校验函数
